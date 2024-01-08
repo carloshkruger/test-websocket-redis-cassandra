@@ -7,8 +7,8 @@ function getIntegerInRange(min, max) {
   )
 }
 
-const NUMBER_OF_WS_CLIENTS = 1000
-const NUMBER_OF_MESSAGES_SENT_BY_WS_CLIENT = 1000
+const NUMBER_OF_WS_CLIENTS = 10_000
+const NUMBER_OF_MESSAGES_SENT_PER_WS_CLIENT = 10
 
 for (let i = 1; i <= NUMBER_OF_WS_CLIENTS; i++) {
   const wsClient = new WebSocket('ws://localhost:300'+getIntegerInRange(0,2), 'ws', {
@@ -18,14 +18,10 @@ for (let i = 1; i <= NUMBER_OF_WS_CLIENTS; i++) {
   })
 
   wsClient.on('open', async () => {
-    for (let j = 0; j < NUMBER_OF_MESSAGES_SENT_BY_WS_CLIENT; j++) {
-      // according to my tests, 2 cassandra nodes can handle roughly 8000 requests per second
-      // so we have 1000 clients and all of then send messages at the same time
-      // which means, if each client sent 8 messages, it would be 8000 messages at the same time,
-      // that is why we sleep for a second
-      if (j % 8 === 0) {
-        await sleep(1000)
-      }
+    for (let j = 0; j < NUMBER_OF_MESSAGES_SENT_PER_WS_CLIENT; j++) {
+      // With 10k users sending messages at the same time, Cassandra will not be able to handle
+      // this quantity of requests (it is possible to add more nodes to the cluster) thats why we sleep for 1 sec
+      await sleep(1000)
       const recipientId = getIntegerInRange(1, NUMBER_OF_WS_CLIENTS+1)
       wsClient.send(JSON.stringify({
         recipientId,

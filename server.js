@@ -18,12 +18,11 @@ const cassandraClient = new CassandraClient({
 await cassandraClient.connect()
 
 const REDIS_SERVER = "redis://localhost:6379";
-const WEB_SOCKET_PORT = Number(process.env.WEB_SOCKET_PORT || 3000);
 
 const redisClient = createRedisClient(REDIS_SERVER)
 redisClient.on('error', err => console.log('Redis Client Error', err))
 
-const REDIS_NOTIFICATIONS_TOPIC = 'app:notifications'
+const REDIS_NOTIFICATIONS_TOPIC_PREFIX = 'app:notifications'
 
 const redisSubscriber = redisClient.duplicate();
 await redisSubscriber.connect();
@@ -31,50 +30,47 @@ await redisSubscriber.connect();
 const redisPublisher = redisClient.duplicate();
 await redisPublisher.connect();
 
-const wsConnections = new Map()
-
-await redisSubscriber.subscribe(REDIS_NOTIFICATIONS_TOPIC, message => {
-  const data = JSON.parse(message)
-  const wsClient = wsConnections.get(Number(data.userId))
-
-  if (wsClient && wsClient.readyState === WebSocket.OPEN) {
-    console.log(data.content)
-    wsClient.send(data.content);
-  }
-});
-
+const WEB_SOCKET_PORT = Number(process.env.WEB_SOCKET_PORT || 3000);
 const wsServer = new WebSocketServer({ port : WEB_SOCKET_PORT });
  
-wsServer.on('connection', function connection(ws, req) {
+wsServer.on('connection', async function connection(ws, req) {
   const userId = Number(req.headers.userid)
-  wsConnections.set(userId, ws)
+  const topicName = `${REDIS_NOTIFICATIONS_TOPIC_PREFIX}:${userId}`
 
-  ws.on('close', () => {
+  console.log('new connection', userId) 
+
+  await redisSubscriber.subscribe(topicName, message => {
+    console.log('message:', message)
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(message);
+    }
+  });
+
+  ws.on('close', async () => {
     console.log('connection closed', userId)
-    wsConnections.delete(userId)
+    await redisSubscriber.unsubscribe(topicName)
   })
 
-  ws.on('error', () => {
+  ws.on('error', async () => {
     console.log('some error happened')
-    wsConnections.delete(userId)
+    await redisSubscriber.unsubscribe(topicName)
   })
 
   ws.on('message', async message => {
     const data = JSON.parse(message)
+    const recipientId = Number(data.recipientId)
+
     await cassandraClient.execute('INSERT INTO messages (id, authorId, recipientId, content, createdAt) VALUES (?, ?, ?, ?, ?)', [
       randomUUID(),
       userId,
-      Number(data.recipientId),
+      recipientId,
       data.content,
       new Date()
     ], {
       prepare: true
     })
-    await redisPublisher.publish(REDIS_NOTIFICATIONS_TOPIC, JSON.stringify({
-      userId: data.recipientId,
-      content: data.content
-    }))
-  })
 
-  console.log('new connection', userId) 
+    const recipientTopic = `${REDIS_NOTIFICATIONS_TOPIC_PREFIX}:${recipientId}`
+    await redisPublisher.publish(recipientTopic, data.content)
+  })
 });
